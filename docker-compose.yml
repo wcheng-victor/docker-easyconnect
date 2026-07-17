@@ -1,17 +1,54 @@
-version: '2'
 services:
-    easyconnect:
-        image: hagb/docker-easyconnect:7.6.7 # latest, vncless, 7.6.3, vncless-7.6.3, 7.6.7, vncless-7.6.7
-        devices:
-          - /dev/net/tun
-        cap_add: 
-          - NET_ADMIN
-        volumes:
-          - $HOME/.ecdata:/root
-        environment:
-          - URLWIN=1
-          - PASSWORD=xxxx
-        ports:
-          - "127.0.0.1:5901:5901"
-          - "127.0.0.1:1080:1080"
-          - "127.0.0.1:8888:8888"
+  # 中间构建镜像：编译 fake-hwaddr / fake-getlogin / tinyproxy / noVNC 等产物，
+  # 供 Dockerfile 中 COPY --from=hagb/docker-easyconnect:build 使用。
+  # 只用于构建、不需要运行，因此放在 build profile 中，默认 up 不会启动它。
+  # 构建顺序（必须先 builder 再 atrust）：
+  #   docker compose build builder
+  #   docker compose build atrust
+  builder:
+    image: hagb/docker-easyconnect:build
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+    profiles: ["build"]
+
+  atrust:
+    image: hagb/docker-atrust:2.5.16.30
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 对应 build-args/atrust-2.5.16.30-amd64.txt
+        VPN_URL: https://atrustcdn.sangfor.com/standard/linux/2.5.16.30/uos/amd64/aTrustInstaller_amd64.deb
+        VPN_TYPE: ATRUST
+        # 需要内置 chromium（web 认证）时取消注释：
+        # CHROMIUM: "1"
+    container_name: atrust
+    # 特权模式：解决路由表报错和网络不稳定的关键
+    privileged: true
+    restart: unless-stopped
+
+    devices:
+      - /dev/net/tun
+    # 虽然有了 privileged，保留 cap_add 也没坏处
+    cap_add:
+      - NET_ADMIN
+
+    ports:
+      # SOCKS5 端口：Clash 将通过这个端口连接内网
+      - "1080:1080"
+      # VNC 端口：仅登录时需要用 VNC 客户端连接
+      - "5901:5901"
+      # HTTP 端口备用，这里可以注释掉或留着
+      - "8888:8888"
+      - "54631:54631"
+
+    environment:
+      - PASSWORD=123456
+      - URLWIN=1
+
+    volumes:
+      - $HOME/.atrust-data:/root
+
+    sysctls:
+      - net.ipv4.conf.default.route_localnet=1

@@ -148,8 +148,13 @@ init_vpn_config() {
 }
 
 start_tigervncserver() {
+	# 容器重启后 /tmp/.X11-unix 中可能残留上次的 X socket（清理 /tmp 时特意跳过了该目录），
+	# 会导致 tigervncserver 误认为 display 已被占用而启动失败，进而使 VPN 前端反复崩溃。
+	# 此处仅在没有 Xtigervnc 运行时清除本 display 的残留 socket。
+	pidof Xtigervnc > /dev/null || rm -f "/tmp/.X11-unix/X${DISPLAY#:}" "/tmp/.X${DISPLAY#:}-lock"
+
 	# $PASSWORD 不为空时，更新 vnc 密码
-	[ -e ~/.vnc/passwd ] || (mkdir -p ~/.vnc && (echo password | tigervncpasswd -f > ~/.vnc/passwd)) 
+	[ -e ~/.vnc/passwd ] || (mkdir -p ~/.vnc && (echo password | tigervncpasswd -f > ~/.vnc/passwd))
 	[ -n "$PASSWORD" ] && printf %s "$PASSWORD" | tigervncpasswd -f > ~/.vnc/passwd
 
 	VNC_SIZE="${VNC_SIZE:-1110x620}"
