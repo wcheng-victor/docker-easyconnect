@@ -1,7 +1,8 @@
 #!/bin/bash
 eval "$(detect-iptables.sh)"
-eval "$(detect-route.sh)"
+# vpn-config.sh 需先于 detect-route.sh：后者要用到 VPN_TUN
 eval "$(vpn-config.sh)"
+eval "$(detect-route.sh)"
 
 forward_ports() {
 	if [ -n "$FORWARD" ]; then
@@ -206,6 +207,10 @@ forward_ports &
 start_danted &
 start_tinyproxy &
 config_vpn_iptables &
+# open_tun_route 是常驻循环（等 tun 设备就绪，并在 VPN 重连后补回规则），必须 disown：
+# 否则下面那个 wait 会一直等它，start-sangfor.sh 永远不会执行，VPN 客户端起不来。
+open_tun_route &
+disown
 force_open_ports &
 keep_pinging &
 keep_pinging_url &
