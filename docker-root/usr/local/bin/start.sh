@@ -196,6 +196,107 @@ keep_pinging_url() {
 	done &
 }
 
+# aTrust DNS 自动发现与切换（仅 ATRUST 类型）。
+#
+# 背景：aTrust 的 DNS 代理会同时使用 inner(公司内网 DNS) 和 outer(容器系统 DNS)
+# 两条解析路径。容器系统 DNS 在宿主机上可能被 TUN 类代理（如 mihomo 的 fake-IP）
+# 劫持，于是 tinyproxy(8888)/danted(1080) 会间歇性解析到 fake-IP（如 198.19.x），
+# 连接漏进 TUN 后因内网域名无法用公网 DNS 解析而立即断开。
+#
+# 做法：从 aTrust 的 DNS 访问日志中提取 inner DNS 地址（日志里形如
+# "inner@10.64.84.4:53"），等 VPN tun 设备就绪后，把该地址路由进 tun，
+# 并把容器 /etc/resolv.conf 指向它，使容器内域名始终由公司 DNS 解析出真实内网 IP。
+# VPN 断开时恢复容器启动时的 resolv.conf。可用 VPN_DNS 手动覆盖；
+# VPN_DNS_PROBE 指定一个会走内网 DNS 的域名，用于触发一条新鲜的解析日志。
+#
+# ！！！注意：dnsproxyAccess.log 的格式属于深信服 aTrust 的内部实现。
+# ！！！升级 aTrust/深信服版本后必须重新验证日志中是否仍有 "inner@<IP>:53" 字段；
+# ！！！若格式变化，本函数会检测失败并保持/恢复 Docker 默认 DNS（127.0.0.11），
+# ！！！不会破坏网络，但需要按新格式修正提取逻辑。
+open_vpn_dns() {
+	[ "ATRUST" = "$_VPN_TYPE" ] || return 0
+	local log=/root/.aTrust/logs/xtunnel/dnsproxyAccess.log
+	local applied="" warned=""
+
+	# 保存容器启动时的 resolv.conf，VPN 断开后恢复
+	[ -e /run/resolv.conf.orig ] || cp /etc/resolv.conf /run/resolv.conf.orig 2>/dev/null
+
+	while :; do
+		# 只有 tun 拿到内网地址才算隧道可用；登录前 utun7 可能是 2.0.0.1 之类的占位地址
+		local tun_ip
+		tun_ip=$(ip -4 -o addr show dev "$VPN_TUN" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+		case "$tun_ip" in
+			10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) ;;
+			*) tun_ip="" ;;
+		esac
+
+		if [ -n "$tun_ip" ]; then
+			if [ -n "$applied" ]; then
+				# 自愈：VPN 重连或其它程序改动后，补回路由与 resolv.conf
+				ip route replace "$applied/32" dev "$VPN_TUN" 2>/dev/null
+				grep -qx "nameserver $applied" /etc/resolv.conf 2>/dev/null ||
+					printf 'nameserver %s\noptions ndots:0\n' "$applied" > /etc/resolv.conf
+			else
+				local dns="$VPN_DNS" ok=1 ans
+				if [ -z "$dns" ]; then
+					# 主动触发一次解析，尽量拿到本次会话的日志；否则取最后一条
+					[ -n "$VPN_DNS_PROBE" ] &&
+						busybox nslookup "$VPN_DNS_PROBE" 198.18.255.1 > /dev/null 2>&1
+					dns=$(grep -aoE 'inner@[0-9.]+:53' "$log" 2>/dev/null |
+						tail -1 | sed -E 's/inner@([0-9.]+):53/\1/')
+				fi
+				# 只接受内网地址，排除 127.0.0.11 和 198.19.x 等 fake-IP
+				case "$dns" in
+					10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) ;;
+					*) dns="" ;;
+				esac
+				if [ -n "$dns" ]; then
+					# 先加路由，再用该 DNS 解析探测域名，确认隧道真的可用。
+					# 登录前/刚重连时 tun 可能已在但还不通，不能急着改 resolv.conf。
+					ip route replace "$dns/32" dev "$VPN_TUN"
+					if [ -n "$VPN_DNS_PROBE" ]; then
+						ans=$(timeout 4 busybox nslookup "$VPN_DNS_PROBE" "$dns" 2>/dev/null |
+							awk '/^Address: /{print $2}' | tail -1)
+						case "$ans" in
+							10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) ;;
+							*) ok=0 ;;
+						esac
+					fi
+					if [ "$ok" = 1 ]; then
+						printf 'nameserver %s\noptions ndots:0\n' "$dns" > /etc/resolv.conf
+						applied="$dns"
+						warned=""
+						echo "aTrust DNS: using $dns via $VPN_TUN" >&2
+					else
+						ip route del "$dns/32" dev "$VPN_TUN" 2>/dev/null
+						[ -z "$warned" ] && {
+							warned=1
+							echo "aTrust DNS: $dns unreachable via $VPN_TUN, waiting" >&2
+						}
+						dns=""
+					fi
+				fi
+				[ -z "$dns" ] && [ -z "$warned" ] && {
+					warned=1
+					echo "aTrust DNS: no usable inner DNS in $log, keeping Docker DNS."\
+					     "The log format may have changed after a Sangfor upgrade." >&2
+				}
+			fi
+		elif [ -n "$applied" ]; then
+			if [ -e /run/resolv.conf.orig ]; then
+				cat /run/resolv.conf.orig > /etc/resolv.conf
+			else
+				printf 'nameserver 127.0.0.11\noptions ndots:0\n' > /etc/resolv.conf
+			fi
+			ip route del "$applied/32" dev "$VPN_TUN" 2>/dev/null
+			echo "aTrust DNS: VPN down, restored original resolver" >&2
+			applied=""
+			warned=""
+		fi
+		sleep 5
+	done
+}
+
 # container 再次运行时清除 /tmp 中的锁，使 container 能够反复使用。
 # 感谢 @skychan https://github.com/Hagb/docker-easyconnect/issues/4#issuecomment-660842149
 for f in /tmp/* /tmp/.*; do
@@ -210,6 +311,9 @@ config_vpn_iptables &
 # open_tun_route 是常驻循环（等 tun 设备就绪，并在 VPN 重连后补回规则），必须 disown：
 # 否则下面那个 wait 会一直等它，start-sangfor.sh 永远不会执行，VPN 客户端起不来。
 open_tun_route &
+disown
+# open_vpn_dns 同样是常驻循环，必须 disown，否则会阻塞后面的 wait。
+open_vpn_dns &
 disown
 force_open_ports &
 keep_pinging &

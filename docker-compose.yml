@@ -46,6 +46,10 @@ services:
     environment:
       - PASSWORD=123456
       - URLWIN=1
+      # aTrust DNS 自动发现：探测域名需能走内网 DNS，用于触发一条新鲜的解析日志
+      - VPN_DNS_PROBE=riagent.gientech.com
+      # 可选：手动指定内网 DNS（留空则从 aTrust 日志自动提取）
+      # - VPN_DNS=10.64.84.4
 
     volumes:
       - $HOME/.atrust-data:/root

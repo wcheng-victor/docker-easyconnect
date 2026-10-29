@@ -92,6 +92,36 @@ socks5 和 http 代理会分别在容器的 `1080` 和 `8888` 端口开启，VPN
 requests.get('https://www.hao123.com', proxies={'http': '127.0.0.1:8888'})
 ```
 
+#### aTrust 内网 DNS 自动适配
+
+aTrust 的 DNS 代理会同时使用 inner（公司内网 DNS）和 outer（容器系统 DNS）两条解析路径。如果宿主机上还运行着 TUN 类代理（如 mihomo 的 fake-IP），容器的系统 DNS 可能被劫持并返回 fake-IP，导致 1080/8888 代理间歇性解析失败。
+
+启动脚本会在 VPN tun 设备就绪后，从 aTrust 的 DNS 访问日志 `/root/.aTrust/logs/xtunnel/dnsproxyAccess.log` 中提取公司 DNS 地址（日志中的 `inner@<IP>:53` 字段），把该地址路由进 tun，并把容器 `/etc/resolv.conf` 指向它；VPN 断开时自动恢复。可用环境变量：
+
+- `VPN_DNS`：手动指定内网 DNS 地址，留空则从日志自动提取；
+- `VPN_DNS_PROBE`：一个会走内网 DNS 的域名，用于触发一条新鲜的解析日志（例如 `riagent.gientech.com`）。
+
+> **注意**：`dnsproxyAccess.log` 的格式是深信服 aTrust 的内部实现。**升级 aTrust/深信服版本后，需要重新验证日志中是否仍存在 `inner@<IP>:53` 字段**。若格式变化，脚本会检测失败并保持 Docker 默认 DNS（`127.0.0.11`），不会破坏网络，但需要按新格式修正 `start.sh` 中的提取逻辑。
+
+#### aTrust 路由与 Clash IP 规则同步
+
+aTrust 登录后会按策略向容器下发内网资源路由。`tools/update-atrust-ip-rules.py` 可以读取容器内 tun 接口（默认 `utun7`）的路由，合并成最简 CIDR 列表，并更新 Clash Verge 当前档案规则扩展文件里的 `IP-CIDR,...,aTrust` 规则：
+
+```bash
+# 预览（不写文件）
+python3 tools/update-atrust-ip-rules.py
+
+# 写入（自动备份原文件）
+python3 tools/update-atrust-ip-rules.py --write
+
+# 对比运行中的 mihomo 规则与容器路由
+python3 tools/update-atrust-ip-rules.py --check
+```
+
+写入后需要在 Clash Verge 中重载当前档案（或重启 Clash Verge）才会生效。脚本还会检查容器默认路由网段与 `SRC-IP-CIDR` 规则是否一致；Docker 网络重建导致网段变化时，可用 `--fix-src-cidr` 让脚本一并修正。
+
+本仓库也提供了同名的 Claude Code skill（`.claude/skills/update-atrust-ip-rules`），在仓库内工作时可以让 agent 按 skill 中的流程执行检查和更新。
+
 ### ip forward
 
 宿主机可以通过路由表（将容器地址作为下一跳路由）来设置透明代理，mtu 应与容器内的 `tun0`（EasyConnect）或 `utun7`（aTrust）网络接口保持一致。可通过 `docker exec 容器名 cat /sys/class/net/接口名/mtu` 来获取，一般为 1400（EasyConnect）或 1500（aTrust）。
