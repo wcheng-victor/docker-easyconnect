@@ -50,6 +50,9 @@ services:
       - VPN_DNS_PROBE=riagent.gientech.com
       # 可选：手动指定内网 DNS（留空则从 aTrust 日志自动提取）
       # - VPN_DNS=10.64.84.4
+      # 切换 DNS 后默认会重启 tinyproxy/danted 清掉登录前缓存的 fake-IP；
+      # 不需要时取消注释：
+      # - VPN_DNS_NO_PROXY_RESTART=1
 
     volumes:
       - $HOME/.atrust-data:/root

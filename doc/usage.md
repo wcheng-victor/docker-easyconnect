@@ -99,7 +99,10 @@ aTrust 的 DNS 代理会同时使用 inner（公司内网 DNS）和 outer（容�
 启动脚本会在 VPN tun 设备就绪后，从 aTrust 的 DNS 访问日志 `/root/.aTrust/logs/xtunnel/dnsproxyAccess.log` 中提取公司 DNS 地址（日志中的 `inner@<IP>:53` 字段），把该地址路由进 tun，并把容器 `/etc/resolv.conf` 指向它；VPN 断开时自动恢复。可用环境变量：
 
 - `VPN_DNS`：手动指定内网 DNS 地址，留空则从日志自动提取；
-- `VPN_DNS_PROBE`：一个会走内网 DNS 的域名，用于触发一条新鲜的解析日志（例如 `riagent.gientech.com`）。
+- `VPN_DNS_PROBE`：一个会走内网 DNS 的域名，用于触发一条新鲜的解析日志（例如 `riagent.gientech.com`）；
+- `VPN_DNS_NO_PROXY_RESTART`：设置为非空可关闭切换 DNS 后自动重启 tinyproxy/danted 的行为。
+
+切换 DNS 后会短暂重启 `tinyproxy`/`danted`，以清掉登录前/登录窗口内可能缓存的 fake-IP；这会断开当时的代理连接，一般只发生在登录后的瞬间。
 
 > **注意**：`dnsproxyAccess.log` 的格式是深信服 aTrust 的内部实现。**升级 aTrust/深信服版本后，需要重新验证日志中是否仍存在 `inner@<IP>:53` 字段**。若格式变化，脚本会检测失败并保持 Docker 默认 DNS（`127.0.0.11`），不会破坏网络，但需要按新格式修正 `start.sh` 中的提取逻辑。
 

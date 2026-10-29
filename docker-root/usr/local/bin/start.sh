@@ -213,6 +213,28 @@ keep_pinging_url() {
 # ！！！升级 aTrust/深信服版本后必须重新验证日志中是否仍有 "inner@<IP>:53" 字段；
 # ！！！若格式变化，本函数会检测失败并保持/恢复 Docker 默认 DNS（127.0.0.11），
 # ！！！不会破坏网络，但需要按新格式修正提取逻辑。
+
+# 切换 DNS 后重启代理，清掉登录前/登录窗口内可能缓存的 fake-IP。
+# 可在 compose 里设置 VPN_DNS_NO_PROXY_RESTART=1 关闭。
+restart_vpn_proxies() {
+	[ -n "$VPN_DNS_NO_PROXY_RESTART" ] && return 0
+	echo "aTrust DNS: restarting danted/tinyproxy to drop cached fake-IPs" >&2
+	killall danted tinyproxy 2>/dev/null
+	sleep 1
+	killall -9 danted tinyproxy 2>/dev/null
+	/usr/sbin/danted -D -f /run/danted.conf 2>/dev/null ||
+		echo "aTrust DNS: failed to restart danted" >&2
+	tinyproxy -c /etc/tinyproxy.conf 2>/dev/null ||
+		echo "aTrust DNS: failed to restart tinyproxy" >&2
+	sleep 1
+	pidof danted > /dev/null &&
+		echo "aTrust DNS: danted restarted" >&2 ||
+		echo "aTrust DNS: danted is not running" >&2
+	pidof tinyproxy > /dev/null &&
+		echo "aTrust DNS: tinyproxy restarted" >&2 ||
+		echo "aTrust DNS: tinyproxy is not running" >&2
+}
+
 open_vpn_dns() {
 	[ "ATRUST" = "$_VPN_TYPE" ] || return 0
 	local log=/root/.aTrust/logs/xtunnel/dnsproxyAccess.log
@@ -267,6 +289,7 @@ open_vpn_dns() {
 						applied="$dns"
 						warned=""
 						echo "aTrust DNS: using $dns via $VPN_TUN" >&2
+						restart_vpn_proxies
 					else
 						ip route del "$dns/32" dev "$VPN_TUN" 2>/dev/null
 						[ -z "$warned" ] && {
