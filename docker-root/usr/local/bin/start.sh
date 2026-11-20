@@ -240,6 +240,29 @@ open_vpn_dns() {
 	local log=/root/.aTrust/logs/xtunnel/dnsproxyAccess.log
 	local applied="" warned=""
 
+	# 公网回退 DNS：unbound (DoT, 127.0.0.2:53)。宿主机 mihomo TUN 只劫持明文
+	# 53 端口，DoT(853) 被当作普通流量放行，因此可绕开 fake-IP 污染获得真实解析。
+	ensure_unbound_outer() {
+		pidof unbound > /dev/null 2>&1 && return 0
+		[ -x /usr/sbin/unbound ] || return 1
+		/usr/sbin/unbound -d -c /etc/unbound/unbound-outer.conf >/dev/null 2>&1 &
+		sleep 1
+		pidof unbound > /dev/null 2>&1
+	}
+
+	# up 状态的 resolv.conf：公司 DNS 优先，unbound DoT 回退（公网域名在公司
+	# DNS 上 SERVFAIL 时 glibc 会自动尝试下一个 nameserver）。
+	write_resolv_up() {
+		local f=/run/resolv.conf.new
+		printf 'nameserver %s\n' "$1" > "$f"
+		ensure_unbound_outer && printf 'nameserver 127.0.0.2\n' >> "$f"
+		printf 'options timeout:1 attempts:2\n' >> "$f"
+		# 注意：/etc/resolv.conf 是 Docker 的 bind-mount 文件，mv/rename 会报
+		# "Device or resource busy"，必须用重定向原地写入。
+		cat "$f" > /etc/resolv.conf && rm -f "$f"
+	}
+
+
 	# 保存容器启动时的 resolv.conf，VPN 断开后恢复
 	[ -e /run/resolv.conf.orig ] || cp /etc/resolv.conf /run/resolv.conf.orig 2>/dev/null
 
@@ -255,9 +278,12 @@ open_vpn_dns() {
 		if [ -n "$tun_ip" ]; then
 			if [ -n "$applied" ]; then
 				# 自愈：VPN 重连或其它程序改动后，补回路由与 resolv.conf
+				# （aTrust 可能整体重写路由表，把手动加的 /32 清掉，需持续补回）
 				ip route replace "$applied/32" dev "$VPN_TUN" 2>/dev/null
-				grep -qx "nameserver $applied" /etc/resolv.conf 2>/dev/null ||
-					printf 'nameserver %s\noptions ndots:0\n' "$applied" > /etc/resolv.conf
+				if ! { grep -qx "nameserver $applied" /etc/resolv.conf 2>/dev/null &&
+					grep -qx "nameserver 127.0.0.2" /etc/resolv.conf 2>/dev/null; }; then
+					write_resolv_up "$applied"
+				fi
 			else
 				local dns="$VPN_DNS" ok=1 ans
 				if [ -z "$dns" ]; then
@@ -285,7 +311,7 @@ open_vpn_dns() {
 						esac
 					fi
 					if [ "$ok" = 1 ]; then
-						printf 'nameserver %s\noptions ndots:0\n' "$dns" > /etc/resolv.conf
+						write_resolv_up "$dns"
 						applied="$dns"
 						warned=""
 						echo "aTrust DNS: using $dns via $VPN_TUN" >&2

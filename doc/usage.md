@@ -96,13 +96,23 @@ requests.get('https://www.hao123.com', proxies={'http': '127.0.0.1:8888'})
 
 aTrust 的 DNS 代理会同时使用 inner（公司内网 DNS）和 outer（容器系统 DNS）两条解析路径。如果宿主机上还运行着 TUN 类代理（如 mihomo 的 fake-IP），容器的系统 DNS 可能被劫持并返回 fake-IP，导致 1080/8888 代理间歇性解析失败。
 
-启动脚本会在 VPN tun 设备就绪后，从 aTrust 的 DNS 访问日志 `/root/.aTrust/logs/xtunnel/dnsproxyAccess.log` 中提取公司 DNS 地址（日志中的 `inner@<IP>:53` 字段），把该地址路由进 tun，并把容器 `/etc/resolv.conf` 指向它；VPN 断开时自动恢复。可用环境变量：
+启动脚本会在 VPN tun 设备就绪后，从 aTrust 的 DNS 访问日志 `/root/.aTrust/logs/xtunnel/dnsproxyAccess.log` 中提取公司 DNS 地址（日志中的 `inner@<IP>:53` 字段），把该地址路由进 tun，并把容器 `/etc/resolv.conf` 配置成「公司 DNS 优先 + DoT 回退」；VPN 断开时自动恢复 Docker 默认 DNS。可用环境变量：
 
 - `VPN_DNS`：手动指定内网 DNS 地址，留空则从日志自动提取；
 - `VPN_DNS_PROBE`：一个会走内网 DNS 的域名，用于触发一条新鲜的解析日志（例如 `riagent.gientech.com`）；
 - `VPN_DNS_NO_PROXY_RESTART`：设置为非空可关闭切换 DNS 后自动重启 tinyproxy/danted 的行为。
 
-切换 DNS 后会短暂重启 `tinyproxy`/`danted`，以清掉登录前/登录窗口内可能缓存的 fake-IP；这会断开当时的代理连接，一般只发生在登录后的瞬间。
+**公司 DNS 优先 + DoT 回退（2026-11 起公司 DNS 不再递归公网域名）**：镜像内置一个 unbound 实例（`/etc/unbound/unbound-outer.conf`），监听 `127.0.0.2:53`，通过 DoT（TCP 853，阿里/腾讯公共 DNS）解析公网域名——TUN 类代理只劫持明文 53 端口，DoT 被当作普通流量放行，因此不受 fake-IP 污染。VPN 连接后 resolv.conf 为：
+
+```
+nameserver <公司DNS>      # 内网域名：真实内网 IP，走 tun 隧道
+nameserver 127.0.0.2      # 公网域名：公司 DNS SERVFAIL 后 glibc 自动回退到这里
+options timeout:1 attempts:2
+```
+
+由此 1080/8888 代理对**任意域名**都能得到真实解析：内网域名走 VPN，公网域名解析出公网 IP 后不命中 tun 路由、经默认路由直连出网。unknown 的公网子域也无需在 Clash 里逐个加 DIRECT 例外。
+
+切换 DNS 后会短暂重启 `tinyproxy`/`danted`，以清掉登录前/登录窗口内可能缓存的 fake-IP；这会断开当时的代理连接，一般只发生在登录后的瞬间。watcher 每 5 秒自愈路由与 resolv.conf（aTrust 可能整体重写路由表，把手动加的 `/32` 路由清掉）。
 
 > **注意**：`dnsproxyAccess.log` 的格式是深信服 aTrust 的内部实现。**升级 aTrust/深信服版本后，需要重新验证日志中是否仍存在 `inner@<IP>:53` 字段**。若格式变化，脚本会检测失败并保持 Docker 默认 DNS（`127.0.0.11`），不会破坏网络，但需要按新格式修正 `start.sh` 中的提取逻辑。
 

@@ -17,7 +17,7 @@ RUN . /tmp/build-scripts/config-apt.sh && \
     fi && \
     apt-get install -y --no-install-recommends --no-install-suggests \
         libx11-xcb1 libnss3 libasound2 iptables xclip libxtst6 \
-        dante-server tigervnc-standalone-server tigervnc-tools psmisc flwm x11-utils \
+        dante-server tigervnc-standalone-server tigervnc-tools psmisc flwm x11-utils unbound \
         busybox libssl-dev iproute2 tinyproxy-bin libxss1 ca-certificates \
         fonts-wqy-microhei socat wget $qemu_pkgs $extra_pkgs && \
     if [ -n "$CHROMIUM" ]; then \
