@@ -238,7 +238,7 @@ restart_vpn_proxies() {
 open_vpn_dns() {
 	[ "ATRUST" = "$_VPN_TYPE" ] || return 0
 	local log=/root/.aTrust/logs/xtunnel/dnsproxyAccess.log
-	local applied="" warned=""
+	local applied="" warned="" fails=0 degraded=0
 
 	# 公网回退 DNS：unbound (DoT, 127.0.0.2:53)。宿主机 mihomo TUN 只劫持明文
 	# 53 端口，DoT(853) 被当作普通流量放行，因此可绕开 fake-IP 污染获得真实解析。
@@ -262,6 +262,19 @@ open_vpn_dns() {
 		cat "$f" > /etc/resolv.conf && rm -f "$f"
 	}
 
+	# 周期验活：向公司 DNS 查询探测域名，答案为内网地址才算活着。
+	# 用于识别"僵尸隧道"（注销后 utun7 仍持有内网地址，但会话已死）。
+	probe_vpn_dns() {
+		[ -n "$VPN_DNS_PROBE" ] || return 0
+		local ans
+		ans=$(timeout 2 busybox nslookup "$VPN_DNS_PROBE" "$1" 2>/dev/null |
+			awk '/^Address: /{print $2}' | tail -1)
+		case "$ans" in
+			10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) return 0 ;;
+			*) return 1 ;;
+		esac
+	}
+
 
 	# 保存容器启动时的 resolv.conf，VPN 断开后恢复
 	[ -e /run/resolv.conf.orig ] || cp /etc/resolv.conf /run/resolv.conf.orig 2>/dev/null
@@ -280,9 +293,25 @@ open_vpn_dns() {
 				# 自愈：VPN 重连或其它程序改动后，补回路由与 resolv.conf
 				# （aTrust 可能整体重写路由表，把手动加的 /32 清掉，需持续补回）
 				ip route replace "$applied/32" dev "$VPN_TUN" 2>/dev/null
-				if ! { grep -qx "nameserver $applied" /etc/resolv.conf 2>/dev/null &&
-					grep -qx "nameserver 127.0.0.2" /etc/resolv.conf 2>/dev/null; }; then
-					write_resolv_up "$applied"
+				if probe_vpn_dns "$applied"; then
+					fails=0
+					[ "$degraded" = 1 ] && {
+						degraded=0
+						echo "aTrust DNS: $applied reachable again, restoring dual-path" >&2
+					}
+					if ! { grep -qx "nameserver $applied" /etc/resolv.conf 2>/dev/null &&
+						grep -qx "nameserver 127.0.0.2" /etc/resolv.conf 2>/dev/null; }; then
+						write_resolv_up "$applied"
+					fi
+				else
+					fails=$((fails + 1))
+					# 连续失败视为僵尸隧道：降级为仅 DoT，公网解析不再每次
+					# 等公司 DNS 超时；恢复后自动切回双路。
+					if [ "$fails" -ge 3 ] && [ "$degraded" = 0 ]; then
+						degraded=1
+						printf 'nameserver 127.0.0.2\noptions timeout:1 attempts:2\n' > /etc/resolv.conf
+						echo "aTrust DNS: $applied probing failed ${fails}x, degraded to DoT-only" >&2
+					fi
 				fi
 			else
 				local dns="$VPN_DNS" ok=1 ans
@@ -341,6 +370,8 @@ open_vpn_dns() {
 			echo "aTrust DNS: VPN down, restored original resolver" >&2
 			applied=""
 			warned=""
+			fails=0
+			degraded=0
 		fi
 		sleep 5
 	done
