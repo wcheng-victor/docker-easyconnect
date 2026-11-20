@@ -114,6 +114,10 @@ options timeout:1 attempts:2
 
 切换 DNS 后会短暂重启 `tinyproxy`/`danted`，以清掉登录前/登录窗口内可能缓存的 fake-IP；这会断开当时的代理连接，一般只发生在登录后的瞬间。watcher 每 5 秒自愈路由与 resolv.conf（aTrust 可能整体重写路由表，把手动加的 `/32` 路由清掉）。
 
+#### aTrust 日志清理
+
+`/root` 是持久化 volume，aTrust 的文件日志（每个文件约 21MB、多份轮转 + 按日期命名）会在宿主机上无限累积。启动脚本每 6 小时清理一次超过 `VPN_LOG_KEEP_HOURS`（默认 72 小时，按文件修改时间，设 0 关闭）的轮转日志（`*.N.log`、`*.back`、按日期命名的 `*.log.20*`），当前活跃日志不受影响。compose 中同时用 `logging` 选项限制了容器 stdout/stderr 日志的大小。
+
 > **注意**：`dnsproxyAccess.log` 的格式是深信服 aTrust 的内部实现。**升级 aTrust/深信服版本后，需要重新验证日志中是否仍存在 `inner@<IP>:53` 字段**。若格式变化，脚本会检测失败并保持 Docker 默认 DNS（`127.0.0.11`），不会破坏网络，但需要按新格式修正 `start.sh` 中的提取逻辑。
 
 #### aTrust 路由与 Clash IP 规则同步

@@ -346,6 +346,22 @@ open_vpn_dns() {
 	done
 }
 
+# 定期清理 aTrust 的轮转日志。/root 是持久化 volume，aTrust 自身的轮转
+# （每个文件 ~21MB、保留多份 + 按日期命名）会在宿主机上无限累积。
+# 只删两类文件：*.N.log（轮转）与 *.back（备份），当前活跃的 *.log 不动。
+# VPN_LOG_KEEP_HOURS：旧文件保留时长（小时，按 mtime），默认 72；设 0 关闭。
+prune_vpn_logs() {
+	[ "ATRUST" = "$_VPN_TYPE" ] || return 0
+	local keep="${VPN_LOG_KEEP_HOURS:-72}"
+	[ "$keep" = "0" ] && return 0
+	while :; do
+		find /root/.aTrust/logs /root/.aTrust/aTrust/logs -type f \
+			\( -name "*.[0-9]*.log" -o -name "*.back" -o -name "*.log.20*" \) \
+			-mmin +$((keep * 60)) -delete 2>/dev/null
+		sleep 21600
+	done
+}
+
 # container 再次运行时清除 /tmp 中的锁，使 container 能够反复使用。
 # 感谢 @skychan https://github.com/Hagb/docker-easyconnect/issues/4#issuecomment-660842149
 for f in /tmp/* /tmp/.*; do
@@ -367,6 +383,8 @@ disown
 force_open_ports &
 keep_pinging &
 keep_pinging_url &
+prune_vpn_logs &
+disown
 if [ -z "$DISPLAY" ]
 then
 	export DISPLAY=:1

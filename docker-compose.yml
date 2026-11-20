@@ -53,9 +53,18 @@ services:
       # 切换 DNS 后默认会重启 tinyproxy/danted 清掉登录前缓存的 fake-IP；
       # 不需要时取消注释：
       # - VPN_DNS_NO_PROXY_RESTART=1
+      # aTrust 轮转日志保留时长（小时，按文件修改时间），设 0 关闭定期清理
+      - VPN_LOG_KEEP_HOURS=72
 
     volumes:
       - $HOME/.atrust-data:/root
 
     sysctls:
       - net.ipv4.conf.default.route_localnet=1
+
+    # 限制容器 stdout/stderr 日志在宿主机的大小（aTrust 的文件日志见 VPN_LOG_KEEP_HOURS）
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
