@@ -13,13 +13,13 @@ services:
     profiles: ["build"]
 
   atrust:
-    image: hagb/docker-atrust:2.5.16.30
+    image: hagb/docker-atrust:2.5.16.41
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        # 对应 build-args/atrust-2.5.16.30-amd64.txt
-        VPN_URL: https://atrustcdn.sangfor.com/standard/linux/2.5.16.30/uos/amd64/aTrustInstaller_amd64.deb
+        # 对应 build-args/atrust-2.5.16.41-amd64.txt
+        VPN_URL: https://atrustcdn.sangfor.com/standard/linux/2.5.16.41/uos/amd64/aTrustInstaller_amd64.deb
         VPN_TYPE: ATRUST
         # 需要内置 chromium（web 认证）时取消注释：
         # CHROMIUM: "1"
